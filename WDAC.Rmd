@@ -1,16 +1,18 @@
 ---
-title: "Daily Commute Routines and Adaptability in Sydney (2020–2025)"
+title: "What Moves the City? How COVID, Events and Weather Shaped Sydney’s Train Usage (2020–2025)"
 author: "Nihira Sharma(530784106), Paakhi Dodwani(SID), Pranav Lokhande(SID)"
 date: "2025-07-22"
 output:
   html_document:
     toc: true
     toc_depth: 3
-    number_sections: true
+    number_section: true
     code_folding: hide
     theme: united
     highlight: tango
 ---
+
+# Import Libraries
 
 ```{r}
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
@@ -18,247 +20,68 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 suppressPackageStartupMessages({
   library(dplyr)
   library(ggplot2)
+  library(ggiraph)
   library(sf)
   library(rnaturalearth)
   library(rnaturalearthdata)
 })
 ```
 
-```{r}
-# Paths
-ee_path <- "~/Downloads/WDAC_2025_data/TrainStationEntriesExits/entry-exit-trains-before2024.csv"
-stations_path <- "~/Downloads/WDAC_2025_data/TrainStationEntranceLocations/stationentrances2020_v4.csv"
-shp_path <- "~/Downloads/WDAC_2025_data/SydneyTrainRoutes/sydneytrains/SydneyTrains.shp"
-```
+# Exetutive Summary
+[TODO]
 
-# Executive Summary
+# Introduction
+[TODO]
 
-[TODO]  
+# COVID TOpic
 
-- Brief overview of the problem or question
-- Why it matters (context, relevance)
-- What you aim to discover or demonstrate
+[TOOD]
 
-# Data Exploration
+- Show Opal data from 2020–2021 during lockdowns.
+- Focus on CBD stations (e.g., Town Hall, Wynyard).
+- Compare pre-COVID peaks vs lockdown silence.
+Message: When fear and policy collide, the city shuts down.
+
+# Vivid and Christmas
 
 [TODO]
 
-- Description of datasets used
-- Initial exploration and data cleaning steps
-- Explanation of analysis methods
+- Analyze spikes in evening entries during Vivid (May–June) and NYE (Dec 31).
+- Use Circular Quay, Martin Place, and Town Hall as focal points.
+- Compare normal weeks vs event weeks.
+Message: Events light up the city — literally and in the data.
 
-```{r}
-# Ignore closed stations
-stations_to_ignore <- c("Rosehill", "Camellia", "Rydalmere", "Dundas", "Telopea", "Carlingford")
+# Weather
 
+[TOOD]
 
-# Load and clean entry/exit data
-ee <- read.csv(ee_path) |> 
-  filter(Station_Type %in% c("Train", "Metro Shared")) |>
-  mutate(
-    Train_Station = gsub(" Station", "", Station),
-    Train_Station = gsub(" $", "", Train_Station),
-    TripNumber = as.numeric(ifelse(Trip == "Less than 50", 50, Trip))
-  ) |>
-  filter(!Train_Station %in% stations_to_ignore)
+- Use BOM + Opal to track rainy weeks (e.g. March 2022 floods).
+- Show daily entries dipping during heavy rainfall.
+- Contrast with COVID and event peaks.
+Message: Rain doesn’t cancel life — but it delays it.
 
-
-# Convert MonthYear to Date format
-ee$MonthYear <- as.Date(paste0(ee$MonthYear, "-01"))
-```
-
-# Analysis
+# Comparative View: Which Force Disrupted the Most?
 
 [TODO]
 
-## Impact of COVID-19 Lockdowns on Morning Peak Travel (T1 North Shore Line)
+Create visual side-by-side comparisons:
+- % drop during COVID, during storms, and non-holiday baseline
+- % spike during events like Vivid
+- Show recovery speed — e.g. rain recovers in a day, COVID takes months
+- Possibly create a “disruption index” to quantify impact level and duration.
+
+# Conclusion: Moving Forward, Mindfully
 
 [TODO]
 
-- Overview of typical morning peak travel patterns on T1 before 2020
-- Description of lockdown timeline and key restrictions in early 2020
-- Analysis of ridership decline from January to April 2020 (7–9 AM entries)
-- Visualization ideas: line chart of daily entries, spatial map of % drop by station
-- Discussion of remote work adoption and mobility restrictions as causes
-- Comparison with other lines or broader transport trends (if applicable)
-- Implications for future pandemic or emergency transport planning
-```{r}
-# Assign COVID phase based on MonthYear
-ee <- ee |>
-  mutate(Phase = case_when(
-    MonthYear >= as.Date("2020-01-01") & MonthYear <= as.Date("2021-06-30") ~ "Early COVID",
-    MonthYear >= as.Date("2021-07-01") & MonthYear <= as.Date("2021-12-31") ~ "Delta COVID",
-    MonthYear >= as.Date("2022-01-01") ~ "Post COVID",
-    TRUE ~ NA_character_
-  )) |>
-  filter(!is.na(Phase))  # Remove rows without valid phase
+- Reflect on what each disruption teaches:
+- COVID = city shutdown, long recovery
+- Events = fast joy, short-term crowding
+- Weather = persistent but brief friction
+Call to action: Design smarter transit plans that adapt to multiple disruption types not just one.
 
 
-# Load and filter station locations
-stations <- read.csv(stations_path) |>
-  filter(!duplicated(Train_Station)) |>
-  filter(Train_Station %in% ee$Train_Station)
 
-rownames(stations) <- stations$Train_Station
-
-
-# Add coordinates to ee
-ee <- ee |>
-  mutate(
-    LAT = stations[Train_Station, "LAT"],
-    LONG = stations[Train_Station, "LONG"]
-  ) |>
-  filter(!is.na(LAT) & !is.na(LONG))
-
-# Convert to spatial format
-ee_sf <- st_as_sf(ee, coords = c("LONG", "LAT"), crs = 4326)
-
-# Load and extract T1 route
-trains <- st_read(shp_path, quiet = TRUE)
-trains_ll <- st_transform(trains, crs = 4326)
-t1_route <- trains_ll |> filter(route_shor == "T1")
-
-# Spatial filter: keep stations within 100m of T1 route
-within_t1 <- st_is_within_distance(ee_sf, t1_route, dist = 100)
-t1_station_sf <- ee_sf[lengths(within_t1) > 0, ]
-```
-
-```{r}
-# ✅ Summarize Entries & Exits per Station-Phase
-station_phase_totals <- t1_station_sf |>
-  st_drop_geometry() |>
-  group_by(Train_Station, Phase) |>
-  summarise(
-    Total_Entries = sum(TripNumber[Entry_Exit == "Entry"], na.rm = TRUE),
-    Total_Exits   = sum(TripNumber[Entry_Exit == "Exit"], na.rm = TRUE),
-    .groups = "drop"
-  )
-
-
-# Load Sydney region map
-australia <- ne_states(country = "Australia", returnclass = "sf")
-sydney_region <- australia |> filter(name_en == "New South Wales")
-
-
-# Global color scale range
-entry_log_vals <- log10(t1_station_sf$TripNumber)
-entry_log_vals[!is.finite(entry_log_vals)] <- NA
-log_min <- min(entry_log_vals, na.rm = TRUE)
-log_max <- max(entry_log_vals, na.rm = TRUE)
-
-
-# ✅ Function to plot interactive map for a given phase
-plot_phase <- function(phase_label) {
-  df <- t1_station_sf |> 
-    filter(Entry_Exit == "Entry", Phase == phase_label) |>
-    left_join(station_phase_totals, by = c("Train_Station", "Phase"))
-  
-  df$log_trip <- log10(df$TripNumber)
-  df$log_trip[!is.finite(df$log_trip)] <- NA
-  
-  color_palette <- switch(
-    phase_label,
-    "Early COVID" = c("#E5F5E0", "#31A354"),
-    "Delta COVID" = c("#DEEBF7", "#3182BD"),
-    "Post COVID"  = c("#FEE0D2", "#DE2D26"),
-    c("#F7F7F7", "#252525")
-  )
-  
-  g <- ggplot(sydney_region) +
-    geom_sf(fill = "gray95", color = "gray85") +
-    geom_sf(data = t1_route, color = "darkblue", size = 1.1) +
-    coord_sf(xlim = c(150.5, 151.3), ylim = c(-34.1, -33.4)) +
-    geom_point_interactive(
-      data = df,
-      aes(
-        geometry = geometry,
-        tooltip = paste0(
-          "Station: ", Train_Station,
-          "\nEntries: ", Total_Entries,
-          "\nExits: ", Total_Exits
-        ),
-        colour = log_trip
-      ),
-      stat = "sf_coordinates", size = 2.5
-    ) +
-    ggtitle(paste("T1 North Shore Line Entries -", phase_label)) +
-    scale_colour_gradient(
-      low = color_palette[1], high = color_palette[2], na.value = "grey80"
-    ) +
-    theme_minimal() +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
-      axis.title = element_blank(),
-      legend.position = "bottom"
-    )
-  
-  girafe(ggobj = g)
-}
-```
-
-### Interactive COVID Phase Maps {.tabset}
-
-#### Early COVID
-
-```{r}
-plot_phase("Early COVID")
-```
-
-#### Delta COVID
-
-```{r}
-plot_phase("Delta COVID")
-```
-
-#### Post COVID
-
-```{r}
-plot_phase("Post COVID")
-```
-
-
-## Behavioral Shifts During the Delta Wave — Off-Peak Travel on T3 Bankstown
-
-[TODO]
-
-- Context on Delta wave timing and public health advice in 2021
-- Explanation of peak vs off-peak travel definitions and typical patterns pre-Delta
-- Analysis of hourly entry data showing flattening of morning peaks and off-peak increases
-- Visualization ideas: heatmap or stacked bar chart for hourly usage; clustered map of stations with strongest shifts
-- Possible reasons: crowd avoidance, flexible work hours, staggered shifts
-- Comparison to T1 and other lines to highlight unique or common behaviors
-- Consideration of whether shifts persisted beyond Delta wave period
-
-## Weather Impact — Rainy Season Effects on T2 Inner West Line
-
-[TODO]
-
-- Description of the 2022 prolonged rainy season and key heavy rainfall events
-- Data sources: rainfall measurements, daily ridership numbers
-- Correlation analysis between rainfall intensity and ridership drops on T2 line
-- Visualization ideas: dual-axis line chart overlaying rainfall and train entries
-- Discussion of weather-related disruptions on commuter reliability and modal shifts
-- Implications for infrastructure resilience and transport scheduling under adverse weather
-
-## Return to Office — Commute Frequency on T4 Eastern Suburbs Line in 2023
-
-[TODO]
-
-- Overview of easing restrictions and return-to-office policies starting in 2023
-- Analysis of morning peak ridership recovery trends on T4 line compared to pre-pandemic levels
-- Visualization ideas: smooth area chart or boxplot showing multi-year commute frequency changes
-- Discussion of hybrid work impacts, partial recovery, and remaining gaps in usage
-- Comparison to other lines or modes (if data available)
-- Potential implications for service planning and future demand forecasting
-
-# Conclusion
-
- [TODO]
- 
- - Summarize main insights
- - Discuss implications or potential next steps
- - Reflect on limitations and what could be done further
- 
  
  
  
