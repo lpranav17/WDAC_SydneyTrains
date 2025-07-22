@@ -1,0 +1,76 @@
+body {
+  font-family: 'Segoe UI', 'Arial', sans-serif;
+  font-size: 1.08em;
+  background: #f8f9fa;
+}
+h1, h2, h3 {
+  color: #111 !important;
+  border-bottom: 2px solid #e0e0e0;
+  padding-bottom: 4px;
+  margin-top: 2em;
+}
+h1 {
+  font-size: 2.1em;
+}
+h2 {
+  font-size: 1.5em;
+}
+h3 {
+  font-size: 1.2em;
+}
+blockquote {
+  background: #f0f8ff;
+  border-left: 5px solid #005c9e;
+  margin: 1.5em 0;
+  padding: 1em;
+  font-style: italic;
+  color: #333;
+}
+hr {
+  border: none;
+  border-top: 2px solid #005c9e;
+  margin: 2em 0;
+}
+.section-subtitle {
+  text-align: right;
+  color: #111 !important;
+  font-size: 1.1em;
+  font-weight: bold;
+  margin-bottom: 1em;
+} 
+
+/* Make the main title bold and larger */
+h1.title {
+  font-weight: bold !important;
+  font-size: 2.5em !important;
+  color: #111 !important;
+  margin-bottom: 0.2em;
+}
+
+/* Make the subtitle bold and slightly larger */
+p.subtitle {
+  font-weight: bold !important;
+  font-size: 1.5em !important;
+  color: #005c9e !important;
+  margin-top: -10px;
+  margin-bottom: 20px;
+}
+
+/* Ensure floating TOC is visible and styled */
+.tocify, .toc, #TOC {
+  background: #fff !important;
+  border: 1px solid #e0e0e0 !important;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+  padding: 1em !important;
+  font-size: 1em !important;
+  color: #222 !important;
+  z-index: 1000 !important;
+}
+.tocify-header, .tocify-item {
+  font-weight: bold !important;
+  color: #111 !important;
+}
+.tocify .active, .tocify .tocify-item.active {
+  background: #e6f2fb !important;
+  color: #111 !important;
+} 
