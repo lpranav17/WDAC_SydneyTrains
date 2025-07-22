@@ -10,6 +10,9 @@ output:
     code_folding: hide
     theme: united
     highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
 ---
 
 # Import Libraries
@@ -20,69 +23,251 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 suppressPackageStartupMessages({
   library(dplyr)
   library(ggplot2)
+  library(readr)
+  library(lubridate)
   library(ggiraph)
   library(sf)
   library(rnaturalearth)
   library(rnaturalearthdata)
+  library(stringr)
+  library(vroom)
+  library(zoo)
+  library(knitr)
+  library(kableExtra)
 })
 ```
 
-# Exetutive Summary
+# Data Loading
+
+```{r}
+sydney_weather <- read_csv("~/Downloads/sydney_weather.csv")
+
+opal_2020_train <- read_csv("~/Downloads/opal_2020_train.csv")
+opal_2021_train <- read_csv("~/Downloads/opal_2021_train.csv")
+opal_2022_train <- read_csv("~/Downloads/opal_2022_train.csv")
+opal_2023_train <- read_csv("~/Downloads/opal_2023_train.csv")
+opal_2024_train <- read_csv("~/Downloads/opal_2024_train.csv")
+opal_2025_train <- read_csv("~/Downloads/opal_2025_train.csv")
+```
+
+# Executive Summary
+
 [TODO]
 
 # Introduction
+
 [TODO]
 
-# COVID TOpic
+# COVID Topic
 
 [TOOD]
 
-- Show Opal data from 2020–2021 during lockdowns.
-- Focus on CBD stations (e.g., Town Hall, Wynyard).
-- Compare pre-COVID peaks vs lockdown silence.
-Message: When fear and policy collide, the city shuts down.
+-   Show Opal data from 2020--2021 during lockdowns.
+-   Focus on CBD stations (e.g., Town Hall, Wynyard).
+-   Compare pre-COVID peaks vs lockdown silence. Message: When fear and
+    policy collide, the city shuts down.
 
 # Vivid and Christmas
 
 [TODO]
 
-- Analyze spikes in evening entries during Vivid (May–June) and NYE (Dec 31).
-- Use Circular Quay, Martin Place, and Town Hall as focal points.
-- Compare normal weeks vs event weeks.
-Message: Events light up the city — literally and in the data.
+-   Analyze spikes in evening entries during Vivid (May--June) and NYE
+    (Dec 31).
+-   Use Circular Quay, Martin Place, and Town Hall as focal points.
+-   Compare normal weeks vs event weeks. Message: Events light up the
+    city --- literally and in the data.
 
 # Weather
 
 [TOOD]
 
-- Use BOM + Opal to track rainy weeks (e.g. March 2022 floods).
-- Show daily entries dipping during heavy rainfall.
-- Contrast with COVID and event peaks.
-Message: Rain doesn’t cancel life — but it delays it.
+-   Contrast with COVID and event peaks. Message: Rain doesn't cancel
+    life --- but it delays it.
+
+## Heatwaves and Floods {.tabset}
+
+### Heatwaves
+
+```{r}
+# Step 1: Filter only needed columns and remove NAs
+sydney_weather_filtered <- sydney_weather %>%
+  select(Date, MaxTemp, region) %>%
+  arrange(Date) %>%
+  filter(!is.na(MaxTemp))  # This line removes rows where MaxTemp is NA
+
+# Step 2: Create logical for HotDay
+sydney_weather_filtered <- sydney_weather_filtered %>%
+  mutate(HotDay = MaxTemp > 35)
+
+# Step 3: rle-based streak detection
+rle_hot <- rle(sydney_weather_filtered$HotDay)
+hot_streaks <- inverse.rle(rle_hot)
+
+# Step 4: Add streak group info safely
+sydney_weather_filtered$HeatwaveGroup <- cumsum(c(TRUE, diff(hot_streaks) != 0))
+
+# Step 5: Flag actual heatwave days (3+ hot days in a row)
+sydney_weather_filtered$IsHeatwaveDay <- with(
+  sydney_weather_filtered,
+  ave(HotDay, HeatwaveGroup, FUN = function(x) all(x) & length(x) >= 3)
+)
+
+# Step 6: Keep only heatwave days
+heatwave_days <- sydney_weather_filtered %>%
+  filter(IsHeatwaveDay) %>%
+  select(Date, MaxTemp, region, HeatwaveGroup)
+
+ggplot(heatwave_days, aes(x = Date, y = MaxTemp, color = region)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_smooth(method = "loess", se = FALSE, size = 0.6, linetype = "dashed") +
+  scale_y_continuous(name = "Max Temperature (°C)", limits = c(34, NA)) +
+  scale_x_date(name = "Date") +
+  labs(title = "Heatwave Days in Sydney by Region (2020–2025)",
+       color = "Region") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+```
+
+### Floods
+
+```{r}
+# Step 1: Filter flood-risk days (Rainfall > 50mm)
+flood_risk_days <- sydney_weather %>%
+  filter(`Rainfall` > 50) %>%
+  select(Date, `Rainfall`, region)
+
+# Step 2: Arrange by date within each region
+flood_risk_days <- flood_risk_days %>%
+  arrange(Date, region)
+
+# Step 3: Tag consecutive-day flood events with a FloodEvent ID
+flood_risk_days <- flood_risk_days %>%
+  group_by(region) %>%
+  mutate(
+    gap = c(0, as.numeric(diff(Date))),                # gap between days
+    FloodEvent = cumsum(gap > 1) + 1                   # new group if gap > 1
+  ) %>%
+  select(-gap, -FloodEvent) %>%
+  ungroup()
+
+ggplot(flood_risk_days, aes(x = Date, y = Rainfall, color = region)) +
+  geom_point(alpha = 0.8, size = 2) +
+  facet_wrap(~ region, ncol = 2, scales = "free_y") +
+  scale_color_brewer(palette = "Set1") +  # Optional: uses a nice color palette
+  labs(
+    title = "Flood-Risk Days by Region in Sydney (2020–2025)",
+    x = "Date", y = "Rainfall (mm)",
+    color = "Region"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Train Usage During Extreme Weathers {.tabset}
+
+### Heatwaves 
+
+```{r}
+# Combine all yearly train datasets into one
+all_train_data <- bind_rows(
+  opal_2020_train, opal_2021_train, opal_2022_train, opal_2023_train, opal_2024_train,
+  opal_2025_train
+)
+
+# Ensure date column is in Date format
+all_train_data <- all_train_data %>%
+  mutate(trip_origin_date = as.Date(trip_origin_date))
+
+# Add heatwave label to each row in train data
+train_with_weather <- all_train_data %>%
+  mutate(IsHeatwave = trip_origin_date %in% heatwave_days$Date)
+
+# Group by heatwave or not, and summarise average Tap_Ons
+heatwave_comparison <- train_with_weather %>%
+  group_by(IsHeatwave) %>%
+  summarise(
+    avg_tap_ons = mean(Tap_Ons, na.rm = TRUE),
+    median_tap_ons = median(Tap_Ons, na.rm = TRUE),
+    count = n()
+  )
+
+print(heatwave_comparison)
+
+
+daily_tap_ons <- train_with_weather %>%
+  group_by(trip_origin_date, IsHeatwave) %>%
+  summarise(daily_total = sum(Tap_Ons, na.rm = TRUE), .groups = "drop")
+
+# Boxplot of daily total tap-ons
+ggplot(daily_tap_ons, aes(x = IsHeatwave, y = daily_total, fill = IsHeatwave)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  geom_jitter(width = 0.2, alpha = 0.3, color = "black") +
+  labs(
+    title = "Daily Train Usage on Heatwave vs Non-Heatwave Days",
+    x = "Heatwave Day",
+    y = "Total Train Tap-Ons (per day)"
+  ) +
+  scale_fill_manual(values = c("FALSE" = "#4B9CD3", "TRUE" = "#D55E00")) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+### Floods
+
+```{r}
+train_with_weather <- train_with_weather %>%
+  mutate(IsFlood = trip_origin_date %in% flood_risk_days$Date)
+
+flood_comparison <- train_with_weather %>%
+  group_by(IsFlood) %>%
+  summarise(
+    avg_tap_ons = mean(Tap_Ons, na.rm = TRUE),
+    median_tap_ons = median(Tap_Ons, na.rm = TRUE),
+    count = n()
+  )
+
+print(flood_comparison)
+
+
+flood_comparison <- train_with_weather %>%
+  mutate(IsFlood = trip_origin_date %in% flood_risk_days$Date) %>%
+  group_by(IsFlood) %>%
+  summarise(
+    avg_tap_ons = mean(Tap_Ons, na.rm = TRUE),
+    sd = sd(Tap_Ons, na.rm = TRUE),
+    n = n(),
+    se = sd / sqrt(n)
+  )
+
+ggplot(flood_comparison, aes(x = IsFlood, y = avg_tap_ons, fill = IsFlood)) +
+  geom_col(width = 0.6) +
+  geom_errorbar(aes(ymin = avg_tap_ons - se, ymax = avg_tap_ons + se), width = 0.2) +
+  labs(
+    title = "Average Train Usage on Flood vs Non-Flood Days",
+    x = "Is Flood Day?",
+    y = "Average Train Tap-Ons"
+  ) +
+  scale_fill_manual(values = c("FALSE" = "#90CAF9", "TRUE" = "#F48FB1")) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none")
+```
 
 # Comparative View: Which Force Disrupted the Most?
 
 [TODO]
 
-Create visual side-by-side comparisons:
-- % drop during COVID, during storms, and non-holiday baseline
-- % spike during events like Vivid
-- Show recovery speed — e.g. rain recovers in a day, COVID takes months
-- Possibly create a “disruption index” to quantify impact level and duration.
+Create visual side-by-side comparisons: - % drop during COVID, during
+storms, and non-holiday baseline - % spike during events like Vivid -
+Show recovery speed --- e.g. rain recovers in a day, COVID takes
+months - Possibly create a "disruption index" to quantify impact level
+and duration.
 
 # Conclusion: Moving Forward, Mindfully
 
 [TODO]
 
-- Reflect on what each disruption teaches:
-- COVID = city shutdown, long recovery
-- Events = fast joy, short-term crowding
-- Weather = persistent but brief friction
-Call to action: Design smarter transit plans that adapt to multiple disruption types not just one.
-
-
-
- 
- 
- 
-
+-   Reflect on what each disruption teaches:
+-   COVID = city shutdown, long recovery
+-   Events = fast joy, short-term crowding
+-   Weather = persistent but brief friction Call to action: Design
+    smarter transit plans that adapt to multiple disruption types not
+    just one.
