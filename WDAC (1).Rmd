@@ -1,0 +1,1401 @@
+---
+title: "Trains, Trends, and Turbulence: Tracking Sydney's Rail Ridership (2020–2025)"
+author: "Nihira Sharma: 530784106, Paakhi Dodwani: 530817301, Pranav Lokhande: 530777636"
+date: "23 July 2025"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: hide
+    theme: flatly
+    css: styles.css
+editor_options: 
+  chunk_output_type: inline
+  markdown: 
+    wrap: sentence
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# LIBRARIES
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(ggiraph)
+library(tidyr)
+library(base64enc)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(scales)
+library(readr)
+library(lubridate)
+library(stringr)
+library(vroom)
+library(zoo)
+library(fmsb)
+library(RColorBrewer)
+library(htmltools)
+library(purrr)
+library(plotly)
+library(kableExtra)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# DATA LOADING
+
+# COVID
+ee <- read_csv("/Users/nihirasharma/Downloads/WDAC_2025_data/TrainStationEntriesExits/entry-exit-trains-before2024.csv")
+stations <- read_csv("/Users/nihirasharma/Downloads/WDAC_2025_data/TrainStationEntranceLocations/stationentrances2020_v4.csv")
+shp_path <- "~/Downloads/WDAC_2025_data/SydneyTrainRoutes/sydneytrains/SydneyTrains.shp"
+
+# Events
+all_files <- list.files(
+  path = "/Users/nihirasharma/Downloads/WDAC_2025_data/OpalPatronage",
+  pattern = "^Opal_Patronage_202[0-4].*\\.txt$",
+  full.names = TRUE
+)
+
+read_opal_file <- function(file) {
+  read_delim(
+    file,
+    delim = "|",
+    col_names = c("trip_origin_date", "mode_name", "ti_region", "tap_hour", "Tap_Ons", "Tap_Offs"),
+    skip = 1,
+    col_types = cols(.default = "c"),
+    show_col_types = FALSE
+  )
+}
+
+opal_selected <- map_dfr(all_files, read_opal_file)
+
+# Weather
+sydney_weather <- read_csv("~/Downloads/sydney_weather.csv")
+
+opal_2020_train <- read_csv("~/Downloads/opal_2020_train.csv")
+opal_2021_train <- read_csv("~/Downloads/opal_2021_train.csv")
+opal_2022_train <- read_csv("~/Downloads/opal_2022_train.csv")
+opal_2023_train <- read_csv("~/Downloads/opal_2023_train.csv")
+opal_2024_train <- read_csv("~/Downloads/opal_2024_train.csv")
+opal_2025_train <- read_csv("~/Downloads/opal_2025_train.csv")
+
+all_train_data <- bind_rows(
+  opal_2020_train, opal_2021_train, opal_2022_train, opal_2023_train, opal_2024_train,
+  opal_2025_train
+)
+```
+
+# Introduction
+
+> This report examines the impact of major disruptions—including the COVID-19 pandemic, significant public events and extreme weather—on train usage patterns in Sydney between 2020 and 2025. Using Opal card data and Bureau of Meteorology (BOM) records we analyze changes in passenger volumes, identify key trends and compare the magnitude and duration of different types of disruptions.
+
+------------------------------------------------------------------------
+
+# Data Description
+
+## COVID
+
+This part of the project uses three main datasets:
+
+- Train Entry/Exit Data (entry-exit-trains-before2024.csv): Monthly tap-on/tap-off counts for each Sydney station from 2016 to June 2024. For this study, we focus on Jan 2020–Jun 2024 to capture pandemic-related trends.
+- Station Locations (stationentrances2020_v4.csv): Latitude/longitude of operational stations as of 2020. Missing values were either excluded or filled using OpenStreetMap (Nominatim).
+- Train Line Geometry (SydneyTrains.shp): Shapefile showing line paths (via route_shor). Stations were spatially joined to lines using a 500m buffer.
+- "Less than 50" values were treated as 49 for consistency. These datasets enabled spatio-temporal analysis of train usage during and after COVID.
+
+## Events
+
+- Here we utilise the Opal Patronage dataset which provides daily public transport patronage data for major locations in New South Wales (NSW) from January 2020 to July 2025.
+- This dataset includes Opal card tap-on and tap-off data for train, bus, ferry and light rail aggregated by public transport mode, day of the week and key commercial centers with a relatively more focus on Sydney CBD stations (Circular Quay, Martin Place, Town Hall).
+- The data is sourced from the Transport for NSW Open Data Hub and is stored in the folder named OpalPatronage as available from the Challenge Specifications.
+- The dataset is updated daily and includes patronage figures for specific periods, such as Vivid Sydney, major concerts (e.g., Taylor Swift, The Weeknd, Coldplay), public holidays, and the year-end shutdown (December 25 to January 4).
+
+## Weather
+
+- BOM datatsets: We collected daily rainfall and maximum temperature data from four key regions — Bankstown, Parramatta, Sydney Airport and Richmond to geographically cover all of Sydney. These were combined into a unified dataset to flag heatwave and flood-prone days.
+- Opal Patronage Data (Opal_Patronage_*.txt): This includes daily tap-on/tap-off activity across different transport modes. We:
+* Filtered for train data only for the time period 2020-2025 and merged them into one dataset.
+* Ignored July 3 and 4, 2021, due to completely empty or unreadable files.
+Together, these datasets allowed for a rich spatial and temporal analysis of train patronage across key phases and external disruptions.
+
+------------------------------------------------------------------------
+
+# COVID-19 Impact on Sydney Train Usage
+
+The COVID-19 pandemic significantly affected train usage across Sydney from 2020 to mid-2024. Using Opal card data, this analysis tracks changes in station entries and exits across all train lines during key phases: early COVID, Delta (2021) and post-COVID recovery. Major stations like Central and International Airport showed sharp declines, reflecting reduced commuting and travel. Interactive visuals reveal how usage dropped rapidly during lockdowns, especially on lines like T9 and CCN. While some stations rebounded strongly by 2023, others continue to lag. This section highlights how travel patterns shifted and which parts of the network were most impacted.
+
+```{r}
+# DATA PREP
+
+# ignore closed stations
+stations_to_ignore <- c("Rosehill", "Camellia", "Rydalmere", "Dundas", "Telopea", "Carlingford")
+
+ee <- ee %>%
+  filter(Station_Type %in% c("Train", "Metro Shared")) %>%
+  mutate(
+    Train_Station = gsub(" Station", "", Station),
+    Train_Station = gsub(" $", "", Train_Station),
+    TripNumber = as.numeric(ifelse(Trip == "Less than 50", 50, Trip)),
+    MonthYear = as.Date(paste0(MonthYear, "-01"))
+  ) %>%
+  filter(!Train_Station %in% stations_to_ignore) %>%
+  mutate(
+    Phase = case_when(
+      MonthYear >= as.Date("2020-01-01") & MonthYear <= as.Date("2021-06-30") ~ "Early COVID",
+      MonthYear >= as.Date("2021-07-01") & MonthYear <= as.Date("2021-12-31") ~ "Delta COVID",
+      MonthYear >= as.Date("2022-01-01") ~ "Post COVID",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(Phase))
+
+# load and merge station coordinates
+stations <- stations %>%
+  filter(!duplicated(Train_Station)) %>%
+  filter(Train_Station %in% ee$Train_Station)
+
+ee <- ee %>%
+  left_join(stations %>% 
+  select(Train_Station, LAT, LONG), by = "Train_Station") %>%
+  filter(!is.na(LAT) & !is.na(LONG))
+
+ee_sf <- st_as_sf(ee, coords = c("LONG", "LAT"), crs = 4326)
+
+# load route shapefile
+trains <- st_read(shp_path, quiet = TRUE) %>% st_transform(crs = 4326)
+
+# summarize
+station_phase_totals <- ee_sf %>%
+  st_drop_geometry() %>%
+  group_by(Train_Station, Phase) %>%
+  summarise(
+    Total_Entries = sum(TripNumber[Entry_Exit == "Entry"], na.rm = TRUE),
+    Total_Exits   = sum(TripNumber[Entry_Exit == "Exit"], na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# % drop and recovery + AVG
+station_trends <- station_phase_totals %>%
+  pivot_wider(
+    names_from = Phase,
+    values_from = c(Total_Entries, Total_Exits),
+    names_glue = "{.value}_{gsub(' ', '_', Phase)}"
+  ) %>%
+  mutate(
+    Entry_Drop_Pct = round((Total_Entries_Early_COVID - Total_Entries_Delta_COVID) / Total_Entries_Early_COVID * 100, 1),
+    Entry_Recovery_Pct = round((Total_Entries_Post_COVID - Total_Entries_Delta_COVID) / Total_Entries_Delta_COVID * 100, 1),
+    Exit_Drop_Pct = round((Total_Exits_Early_COVID - Total_Exits_Delta_COVID) / Total_Exits_Early_COVID * 100, 1),
+    Exit_Recovery_Pct = round((Total_Exits_Post_COVID - Total_Exits_Delta_COVID) / Total_Exits_Delta_COVID * 100, 1),
+    Avg_Drop_Pct = round((Entry_Drop_Pct + Exit_Drop_Pct) / 2, 1),
+    Avg_Recovery_Pct = round((Entry_Recovery_Pct + Exit_Recovery_Pct) / 2, 1)
+  )
+```
+
+## Interactive map of train station usage and drop/recovery
+
+This code defines a function to plot all stations on a map color-coded by route with interactive tooltips showing drop and recovery statistics and a bar chart for each station.
+The map supports zooming.
+
+**Purpose:**\
+To visualize the change in train station activity during different phases of the pandemic (Early COVID 2020, Delta 2021, Post-COVID 2023) across all train lines in the Sydney network.
+
+```{r}
+# plot func with zoom
+create_station_plot_base64 <- function(station_name) {
+  station_data <- station_phase_totals |> filter(Train_Station == station_name)
+  station_data$Phase <- factor(station_data$Phase, levels = c("Early COVID", "Delta COVID", "Post COVID"))
+
+  long_data <- station_data |>
+    pivot_longer(cols = c(Total_Entries, Total_Exits),
+                 names_to = "Type", values_to = "Count") |>
+    mutate(Type = ifelse(Type == "Total_Entries", "Entries", "Exits"))
+
+  p <- ggplot(long_data, aes(x = Phase, y = Count, fill = Type)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    geom_text(aes(label = Count), position = position_dodge(0.9), vjust = -0.7, size = 3.2) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(title = station_name) +
+    theme_minimal() +
+    theme(
+      legend.position = "top",
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.margin = margin(10, 10, 10, 10)
+    )
+
+  file_path <- tempfile(fileext = ".png")
+  ggsave(file_path, plot = p, width = 4, height = 3.5, dpi = 150)
+  encoded <- base64enc::dataURI(file = file_path, mime = "image/png")
+  return(paste0("<img src='", encoded, "' width='260'>"))
+}
+
+tooltip_df <- station_trends |>
+  mutate(
+    chart_img = sapply(Train_Station, create_station_plot_base64),
+    tooltip = paste0(
+      chart_img, "<br>",
+      "<b>Drop & Recovery:</b><br>",
+      "Average Drop (Early → Delta): ", Avg_Drop_Pct, "%<br>",
+      "Average Recovery (Delta → Post): ", Avg_Recovery_Pct, "%"
+    )
+  )
+
+df <- ee_sf |>
+  filter(Entry_Exit == "Entry") |>
+  distinct(Train_Station, .keep_all = TRUE) |>
+  left_join(tooltip_df, by = "Train_Station")
+
+# plot
+plot_all_phases <- function() {
+  trains_proj <- st_transform(trains, crs = 3857)
+  trains <- st_read(shp_path, quiet = TRUE)
+  sydney_region <- ne_states(country = "Australia", returnclass = "sf") |> filter(name_en == "New South Wales")
+  sydney_proj <- st_transform(sydney_region, crs = 3857)
+  df_proj <- st_transform(df, crs = 3857)
+
+  bbox_syd <- st_bbox(c(xmin = 150.5, xmax = 151.35, ymin = -34.15, ymax = -33.35), crs = 4326)
+  bbox_proj <- st_transform(st_as_sfc(bbox_syd), crs = 3857)
+
+  gg <- ggplot() +
+    geom_sf(data = sydney_proj, fill = "gray95", color = "gray85") +
+    geom_sf(data = trains_proj, aes(color = route_shor), size = 0.6) +
+    geom_point_interactive(
+      data = df_proj,
+      aes(geometry = geometry, tooltip = tooltip),
+      stat = "sf_coordinates",
+      size = 1.4,
+      colour = "darkred"
+    ) +
+    coord_sf(xlim = st_bbox(bbox_proj)[c("xmin", "xmax")],
+             ylim = st_bbox(bbox_proj)[c("ymin", "ymax")]) +
+    ggtitle("Sydney Train Station Usage – COVID Phases") +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16))
+
+  girafe(
+    ggobj = gg,
+    options = list(
+      opts_tooltip(css = "background-color:white; color:#00274D; font-size:10px; padding:5px;"),
+      opts_zoom(max = 5)
+    )
+  )
+}
+
+plot_all_phases()
+```
+
+**Key Findings:**
+
+-   Significant decline in patronage during Delta (2021) at nearly all stations.
+-   North Sydney, for instance, showed a ~87.4% drop in entries during Delta, followed by a ~1479% recovery in 2023.
+-   The map reveals that while some stations rebounded well post-COVID, others are still lagging behind.
+- International Airport Station also shows a sharp decline in usage during Delta, indicating a simultaneous reduction in both domestic and international air travel.
+
+## Time series for all stations with dropdown
+
+This code creates an interactive time series plot for monthly entries at every station, with a dropdown menu to select the station.
+
+**Purpose:** To analyze monthly entry trends from 2020–2024 for all Sydney train stations via a dropdown-enabled interactive plot.
+
+**Insight:**
+
+-   This visualization clearly highlights temporal disruption and staggered recovery across stations.
+
+**Some station graphs may require autoscaling for better visibility — the option is available in the top right corner.**
+
+```{r}
+# data for monthly entries by station
+ee_station_ts <- ee %>%
+  filter(Entry_Exit == "Entry") %>%
+  group_by(Train_Station, MonthYear) %>%
+  summarise(Total_Entries = sum(TripNumber, na.rm = TRUE), .groups = "drop") %>%
+  arrange(Train_Station, MonthYear) %>%
+  mutate(Log_Entries = log10(Total_Entries + 1))
+
+initial_station <- "Central"
+
+# initial plot
+p <- ggplot(ee_station_ts %>% filter(Train_Station == initial_station),
+            aes(x = MonthYear, y = Total_Entries)) +
+  geom_line(color = "#FF6666", linewidth = 1.2) + 
+  geom_point(color = "#990033", size = 2) +
+  labs(
+    title = paste("Monthly Entries for", initial_station),
+    x = "Month", y = "Entries"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 11)
+  )
+
+pl <- ggplotly(p)
+
+# y-values only for each station
+stations <- unique(ee_station_ts$Train_Station)
+station_series <- lapply(stations, function(station) {
+  list(ee_station_ts %>% 
+         filter(Train_Station == station) %>% 
+         pull(Total_Entries))
+})
+
+# drop down for y axis
+dropdown_buttons <- lapply(seq_along(stations), function(i) {
+  list(
+    method = "restyle",
+    args = list("y", station_series[[i]]),
+    label = stations[i]
+  )
+})
+
+# drop down position
+pl <- pl %>%
+  layout(
+    title = list(
+      text = "<br><b>Station wise entries over the years</b>",
+      x = 0.5,
+      xanchor = "center",
+      font = list(size = 20)
+    ),
+    updatemenus = list(
+      list(
+        type = "dropdown",
+        direction = "down",
+        x = 0.2,
+        xanchor = "right",
+        y = 1.18,
+        yanchor = "top",
+        showactive = TRUE,
+        buttons = dropdown_buttons
+      )
+    ),
+    xaxis = list(title = "Month"),
+    yaxis = list(title = "Entries")
+  )
+
+pl
+```
+
+**Key Findings:**
+
+-   Central Station was used as a representative example due to its high volume and typical patterns.
+-   Sharp decline during the 2020 lockdown and an even steeper drop during the 2021 Delta wave.
+-   Although activity picked up post-2021, Central has not yet fully returned to 2020 peak levels.
+
+## Average Percentage Drop in Usage by Train Line (till 2021)
+
+**Purpose:** To identify and compare which train lines saw the largest average drop in usage during the early and Delta phases of COVID.
+
+```{r, message=FALSE, warning=FALSE}
+# data prep
+
+df_proj <- st_transform(df, 3857)
+trains_proj <- st_transform(trains, 3857)
+
+df_joined <- st_join(df_proj, trains_proj, join = st_is_within_distance, dist = 500)
+
+station_routes <- st_join(
+  df_proj, 
+  trains_proj, 
+  join = st_is_within_distance, 
+  dist = 500, 
+  left = TRUE
+)
+invisible(station_routes)
+
+station_routes_data <- station_routes %>%
+  st_drop_geometry() %>%
+  select(Train_Station, route_shor) %>%
+  distinct() %>%
+  as_tibble()
+
+station_trends_with_route <- station_trends |> 
+  left_join(station_routes_data, by = "Train_Station") |> 
+  filter(!is.na(route_shor))
+
+line_drop <- station_trends_with_route %>%
+  group_by(route_shor) %>%
+  summarise(
+    Avg_Drop = mean(c(Entry_Drop_Pct, Exit_Drop_Pct), na.rm = TRUE)
+  ) %>%
+  arrange(desc(Avg_Drop))
+
+# plot
+plot_ly(
+  data = line_drop,
+  x = ~reorder(route_shor, -Avg_Drop),
+  y = ~Avg_Drop,
+  type = 'bar',
+  text = ~round(Avg_Drop, 1),
+  hovertemplate = "Train Line: %{x}<br>Drop: %{y:.1f}%",
+  marker = list(
+    color = ~Avg_Drop,
+    colorscale = "Reds",
+    showscale = TRUE,
+    colorbar = list(title = "% Drop")
+  )
+) %>%
+  layout(
+    title = list(text = "<br><b>Most Affected Train Lines by Average % Drop (up to 2021)</b>", x = 0.5),
+    xaxis = list(title = "Train Line"),
+    yaxis = list(title = "Average % Drop")
+  )
+```
+
+**Key Findings:**
+
+-   The most affected lines were **CCN** and **T9**, both showing over **84%** average drop.
+
+-   The difference across lines is relatively small, indicating system-wide disruption.
+
+-   **Uneven Recovery:** Some stations like North Sydney showed significant bounce-back, while others remained subdued.
+
+-   **Temporal Clarity:** Time series trends reveal two major dips , one in early 2020 and a steeper one in 2021 followed by partial recovery.
+
+------------------------------------------------------------------------
+
+# Vivid Sydney, Concerts and Holiday Impacts on Sydney Train Usage
+
+::: section-subtitle
+Events, Festivals, and Spikes
+:::
+
+Sydney’s train network experiences significant but temporary spikes in ridership during major public events, festivals and holidays such as Vivid Sydney, high-profile concerts (e.g., Taylor Swift, The Weeknd, Coldplay), public holidays and the year-end shutdown (December 25 to January 4).
+These fluctuations create challenges for transport planning, resource allocation and ensuring efficient service delivery particularly in the Sydney CBD (Circular Quay, Martin Place, Town Hall).
+Understanding the scale and patterns of these temporary increases in train usage is critical for optimizing public transport operations and improving passenger experiences during peak periods.
+
+## Vivid Sydney: Impact on Train Usage
+
+Vivid Sydney, an annual festival known for its vibrant light installations and evening events, significantly boosts train ridership in the Sydney CBD, especially during nighttime hours.
+The festival attracts large crowds with peak activity occurring between 7–10 pm.
+
+### Train: Average Tap-Ons {.tabset}
+
+```{r train-mode-comparison, warning=FALSE}
+# DATA PREP
+
+opal_selected <- opal_selected %>%
+  mutate(date = as.Date(trip_origin_date), year = as.integer(format(date, "%Y")))
+
+# each year vivid period
+vivid_days <- function(year) {
+  seq(as.Date(paste0(year, "-05-22")), as.Date(paste0(year, "-06-14")), by = "day")
+}
+years <- sort(unique(opal_selected$year))
+
+# all vivid dates for all years
+vivid_dates_list <- lapply(years, vivid_days)
+names(vivid_dates_list) <- years
+vivid_dates <- unlist(vivid_dates_list)
+vivid_dates <- vivid_dates[!is.na(vivid_dates)]
+
+# exclude dates for normal days
+exclude_dates <- unique(c(
+  vivid_dates,
+  as.Date(c("2024-02-23", "2024-02-24", "2024-02-25", "2024-02-26", "2024-10-22", "2024-10-23",
+            "2024-01-01", "2024-01-26", "2024-03-29", "2024-03-31", "2024-04-01", "2024-04-25", "2024-12-25", "2024-12-26"))
+))
+
+tap_bin_map <- c("<50"=25,"50-100"=75,"100-200"=150,"200-400"=300,"400-800"=600,"800-1600"=1200,"1600-3200"=2400,"3200-6400"=4800,"More than 6400"=8000)
+
+# helper
+tap_ons <- function(x) {
+  suppressWarnings({
+    num <- as.numeric(x)
+    is_num <- !is.na(num)
+    out <- num
+    out[!is_num] <- tap_bin_map[x[!is_num]]
+    as.numeric(out)
+  })
+}
+
+# 10 random normal days per year
+valid_normal_dates <- opal_selected %>%
+  filter(ti_region == "Sydney CBD", mode_name %in% c("Bus","Light rail","Train","Ferry"), !date %in% exclude_dates, mode_name != "UNKNOWN") %>%
+  select(date, year) %>% distinct()
+set.seed(42)
+normal_sample <- valid_normal_dates %>% group_by(year) %>% summarise(date = sample(date, min(10, n())), .groups="drop")
+
+# All-day avg
+get_avg <- function(dates, label) {
+  opal_selected %>%
+    filter(ti_region == "Sydney CBD", mode_name == "Train", date %in% dates) %>%
+    mutate(Tap_Ons_Est = tap_ons(Tap_Ons)) %>%
+    group_by(year) %>%
+    summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm=TRUE), .groups="drop") %>%
+    mutate(period = label)
+}
+
+# All-day avg for normal and vivid
+normal_days <- get_avg(normal_sample$date, "Normal")
+vivid_days_df <- bind_rows(
+  lapply(years, function(y) get_avg(vivid_days(y), "Vivid Sydney"))
+)
+
+compare_data_train <- bind_rows(normal_days, vivid_days_df) %>%
+  mutate(period = factor(period, c("Normal", "Vivid Sydney")),
+         avg_tap_ons = as.numeric(avg_tap_ons))
+
+# All-day plot
+plot_train_all_day <- ggplot(compare_data_train, aes(
+    x = as.factor(year), y = avg_tap_ons, fill = period,
+    tooltip = paste0("Year: ", year, "<br>Period: ", period, "<br>Avg Tap-Ons: ", comma(round(avg_tap_ons)))
+  )) +
+  geom_col_interactive(position=position_dodge(0.7), width=0.6) +
+  geom_text(aes(label=comma(round(avg_tap_ons))), position=position_dodge(0.7), vjust=-0.3, size=3, color="black") +
+  theme_minimal(base_size=13) +
+  labs(title="Train: Average Tap-Ons (All Day)", x="Year", y="Average Tap-Ons (per day)") +
+  scale_fill_manual(values=c("Normal"="#A9A9A9", "Vivid Sydney"="#0072B2")) +
+  theme(legend.position="top", panel.grid.major.x=element_blank(), axis.text.x=element_text(face="bold"), plot.title=element_text(face="bold", size=15))
+
+# 7–10pm avg
+opal_cbd_evening <- opal_selected %>%
+  filter(ti_region == "Sydney CBD", as.integer(tap_hour) %in% 19:21, mode_name == "Train") %>%
+  mutate(Tap_Ons_Est = tap_ons(Tap_Ons))
+
+vivid_dates_clean <- as.Date(vivid_dates, origin = "1970-01-01")
+vivid_dates_clean <- vivid_dates_clean[!is.na(vivid_dates_clean)]
+vivid_dates_clean <- unique(vivid_dates_clean)
+
+samples_evening <- bind_rows(
+  normal_sample %>% mutate(period="Normal"),
+  tibble(date = vivid_dates_clean, year = as.integer(format(vivid_dates_clean, "%Y")), period = "Vivid Sydney")
+)
+summary_by_mode_evening <- samples_evening %>%
+  left_join(opal_cbd_evening %>% group_by(date, year) %>% summarise(avg_tap_ons=mean(Tap_Ons_Est, na.rm=TRUE), .groups="drop"), by=c("date","year")) %>%
+  filter(!is.na(avg_tap_ons)) %>%
+  group_by(year, period) %>%
+  summarise(avg_tap_ons=mean(avg_tap_ons, na.rm=TRUE), .groups="drop") %>%
+  mutate(period=factor(period, c("Normal", "Vivid Sydney")), year=as.factor(year),
+         avg_tap_ons = as.numeric(avg_tap_ons))
+
+# 7–10pm plot
+plot_train_evening <- ggplot(summary_by_mode_evening, aes(
+    x=year, y=avg_tap_ons, fill=period, group=period,
+    tooltip=paste0("Year: ", year, "<br>Avg Tap-Ons: ", comma(round(avg_tap_ons)))
+  )) +
+  geom_col_interactive(position=position_dodge(0.7), width=0.6) +
+  geom_text(aes(label=comma(round(avg_tap_ons))), position=position_dodge(0.7), vjust=-0.3, size=3.5, color="black") +
+  theme_minimal(base_size=14) +
+  labs(title="Train: Average Tap-Ons (7–10pm)", x="Year", y="Average Tap-Ons (7–10pm)") +
+  scale_fill_manual(values=c("Normal"="#A9A9A9", "Vivid Sydney"="#0072B2")) +
+  theme(legend.position="top", panel.grid.major.x=element_blank(), axis.text.x=element_text(face="bold"), plot.title=element_text(face="bold", size=16))
+```
+
+#### All Day
+
+```{r}
+girafe(ggobj = plot_train_all_day)
+```
+
+**Key findings**:
+
+- All-day tap-ons increased during Vivid Sydney though the effect is less pronounced.
+- In 2020, tap-ons went from 4,998 (normal) to 3,378 (Vivid), again impacted by restrictions.
+- By 2024, normal days averaged 11,299 tap-ons, while Vivid Sydney reached 10,609 showing a modest uplift likely due to daytime visitors alongside evening crowds.
+
+**Analysis**: The data highlights Vivid Sydney’s significant influence on evening train usage with tap-ons during 7–10 pm often exceeding normal days by thousands, peaking in 2024.
+The all-day increase is less dramatic suggesting the festival’s core impact aligns with its nighttime attractions.
+This trend underscores the need for enhanced train services during evening hours to accommodate the influx of festival-goers.
+
+#### Evening (7-10pm)
+
+```{r}
+girafe(ggobj = plot_train_evening)
+```
+
+**Key Findings**:
+
+- Vivid Sydney consistently drives higher tap-ons with a notable increase over normal days.
+- In 2020, tap-ons rose from 4,793 (normal) to 3,050 (Vivid) though still modest due to pandemic restrictions.
+- From 2021 onward, the impact grew, with 2023 showing 17,068 (normal) versus 16,369 (Vivid), and 2024 peaking at 12,980 (normal) versus 17,068 (Vivid).
+- This reflects the festival's nighttime focus with 2024 showing the largest spike indicating a strong recovery and popularity.
+ 
+**Analysis**: The data highlights Vivid Sydney’s significant influence on evening train usage with tap-ons during 7–10 pm often exceeding normal days by thousands, peaking in 2024.
+The all-day increase is less dramatic suggesting the festival’s core impact aligns with its nighttime attractions.
+This trend underscores the need for enhanced train services during evening hours to accommodate the influx of festival-goers.
+
+## Major Concerts: Taylor Swift, The Weeknd, Coldplay In 2024,
+
+Sydney hosted major concerts by Taylor Swift (February 23–26), The Weeknd (October 22–23), and Coldplay (December 6, 7, 9, 10) drawing large crowds and impacting train ridership especially during evening hours.
+
+Average: Train Tap-Ons (All NSW, 2024) The bar charts display the average train tap-ons across NSW during 2024 comparing concert days to normal days for both all-day and evening (7–10 pm) periods.
+
+### Average: Train Tap-Ons (All NSW, 2024) {.tabset}
+
+```{r concerts}
+# special dates
+taylor_dates <- as.Date(c("2024-02-23", "2024-02-24", "2024-02-25", "2024-02-26"))
+weeknd_dates <- as.Date(c("2024-10-22", "2024-10-23"))
+coldplay_dates <- as.Date(c("2024-12-06", "2024-12-07", "2024-12-09", "2024-12-10"))
+vivid_dates <- seq(as.Date("2024-05-24"), as.Date("2024-06-15"), by = "day")
+public_holidays <- as.Date(c(
+  # 2020
+  "2020-01-01", "2020-01-27", "2020-04-10", "2020-04-12", "2020-04-13", "2020-04-25", "2020-06-08", "2020-10-05", "2020-12-25", "2020-12-28",
+  # 2021
+  "2021-01-01", "2021-01-26", "2021-04-02", "2021-04-04", "2021-04-05", "2021-04-25", "2021-06-14", "2021-10-04", "2021-12-25", "2021-12-27", "2021-12-28",
+  # 2022
+  "2022-01-01", "2022-01-26", "2022-04-15", "2022-04-17", "2022-04-18", "2022-04-25", "2022-06-13", "2022-10-03", "2022-12-25", "2022-12-26", "2022-12-27",
+  # 2023
+  "2023-01-01", "2023-01-26", "2023-04-07", "2023-04-09", "2023-04-10", "2023-04-25", "2023-06-12", "2023-10-02", "2023-12-25", "2023-12-26",
+  # 2024
+  "2024-01-01", "2024-01-26", "2024-03-29", "2024-03-31", "2024-04-01", "2024-04-25", "2024-06-10", "2024-10-07", "2024-12-25", "2024-12-26"
+))
+exclude_dates <- c(taylor_dates, weeknd_dates, coldplay_dates, vivid_dates, public_holidays)
+
+tap_bin_map <- c("<50"=25,"50-100"=75,"100-200"=150,"200-400"=300,"400-800"=600,"800-1600"=1200,"1600-3200"=2400,"3200-6400"=4800,"More than 6400"=8000)
+tap_ons <- function(x) {
+  suppressWarnings({
+    num <- as.numeric(x)
+    is_num <- !is.na(num)
+    out <- num
+    out[!is_num] <- tap_bin_map[x[!is_num]]
+    as.numeric(out)
+  })
+}
+
+# prep of opal_selected for 2024 trains
+opal_2024_train <- opal_selected %>%
+  mutate(
+    date = as.Date(trip_origin_date),
+    year = as.factor(format(date, "%Y")),
+    Tap_Ons_Est = tap_ons(Tap_Ons),
+    tap_hour = as.integer(tap_hour)
+  ) %>%
+  filter(ti_region == "Sydney CBD", mode_name == "Train", year == "2024")
+
+# All-Day
+special_taylor_all <- opal_2024_train %>%
+  filter(date %in% taylor_dates) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE)) %>%
+  mutate(period = "Taylor Swift")
+
+special_weeknd_all <- opal_2024_train %>%
+  filter(date %in% weeknd_dates) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE)) %>%
+  mutate(period = "Weeknd")
+
+special_coldplay_all <- opal_2024_train %>%
+  filter(date %in% coldplay_dates) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE)) %>%
+  mutate(period = "Coldplay")
+
+normal_days_all <- opal_2024_train %>%
+  filter(!date %in% exclude_dates) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE)) %>%
+  mutate(period = "Normal")
+
+compare_data_train_all <- bind_rows(
+  normal_days_all, special_taylor_all, special_weeknd_all, special_coldplay_all
+) %>%
+  mutate(period = factor(period, c("Normal", "Taylor Swift", "Weeknd", "Coldplay")))
+
+# 7-10pm
+opal_2024_train_evening <- opal_2024_train %>%
+  filter(tap_hour %in% 19:21)
+
+special_taylor_pm <- opal_2024_train_evening %>%
+  filter(date %in% taylor_dates) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE)) %>%
+  mutate(period = "Taylor Swift")
+
+special_weeknd_pm <- opal_2024_train_evening %>%
+  filter(date %in% weeknd_dates) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE)) %>%
+  mutate(period = "Weeknd")
+
+special_coldplay_pm <- opal_2024_train_evening %>%
+  filter(date %in% coldplay_dates) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE)) %>%
+  mutate(period = "Coldplay")
+
+normal_days_pm <- opal_2024_train_evening %>%
+  filter(!date %in% exclude_dates) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE)) %>%
+  mutate(period = "Normal")
+
+compare_data_train_pm <- bind_rows(
+  normal_days_pm, special_taylor_pm, special_weeknd_pm, special_coldplay_pm
+) %>%
+  mutate(period = factor(period, c("Normal", "Taylor Swift", "Weeknd", "Coldplay")))
+
+period_colors <- c(
+  "Normal" = "#A9A9A9",
+  "Taylor Swift" = "#EF553B",
+  "Weeknd" = "#EF553B",
+  "Coldplay" = "#EF553B"
+)
+
+# plot
+plot_all_day <- ggplot(compare_data_train_all, aes(
+  x = period, y = avg_tap_ons, fill = period,
+  tooltip = paste0("Period: ", period, "<br>Avg Tap-Ons: ", comma(round(avg_tap_ons)))
+)) +
+  geom_col_interactive(width = 0.6) +
+  geom_text(aes(label = comma(round(avg_tap_ons))), vjust = -0.3, size = 3, color = "black") +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "Average Train Tap-Ons (All Day, Sydney CBD, 2024)",
+    x = "Period", y = "Average Tap-Ons (per day)"
+  ) +
+  scale_fill_manual(values = period_colors) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 15)
+  )
+
+plot_evening <- ggplot(compare_data_train_pm, aes(
+  x = period, y = avg_tap_ons, fill = period,
+  tooltip = paste0("Period: ", period, "<br>Avg Tap-Ons: ", comma(round(avg_tap_ons)))
+)) +
+  geom_col_interactive(width = 0.6) +
+  geom_text(aes(label = comma(round(avg_tap_ons))), vjust = -0.3, size = 3, color = "black") +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "Average Train Tap-Ons (7–10pm, Sydney CBD, 2024)",
+    x = "Period", y = "Average Tap-Ons (7–10pm)"
+  ) +
+  scale_fill_manual(values = period_colors) +
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 15)
+  )
+```
+
+#### All Day
+
+```{r}
+girafe(ggobj=plot_all_day)
+```
+
+**Key Findings**
+
+- All-day tap-ons also rose during concert periods.
+- Normal days averaged 10,549 tap-ons with increases to 9,357 for Taylor Swift, 14,823 for The Weeknd and 11,528 for Coldplay.
+- The Weeknd concerts again led with 14,823, indicating a broad daily impact beyond just evening hours.
+
+**Analysis**: The data confirms that major concerts significantly boost train usage, with the largest evening spike during The Weeknd (14,750 vs. 12,018 normal) and a notable all-day increase (14,823 vs. 10,549).
+These trends highlight the need for enhanced train services, particularly in the evening, to manage concert-related crowds effectively across NSW.
+
+#### Evening (7-10pm)
+
+```{r}
+girafe(ggobj=plot_evening)
+```
+
+**Key Findings**
+
+- Concert days show a clear increase in tap-ons compared to normal days.
+- Normal days averaged 12,018 tap-ons, while concerts saw significant spikes: 11,333 for Taylor Swift, 14,750 for The Weeknd, and 13,067 for Coldplay.
+- The Weeknd concerts recorded the highest average at 14,750 reflecting strong evening demand driven by concert schedules.
+ 
+**Analysis**: The data confirms that major concerts significantly boost train usage, with the largest evening spike during The Weeknd (14,750 vs. 12,018 normal) and a notable all-day increase (14,823 vs. 10,549).
+These trends highlight the need for enhanced train services, particularly in the evening, to manage concert-related crowds effectively across NSW.
+
+
+## Public Holidays and Year-End Shutdown
+
+Public holidays and the annual year-end shutdown (December 25 to January 4) influence train ridership patterns in Sydney, typically reducing usage compared to normal days due to closures and travel shifts.
+
+**Average Train Tap-Ons (Sydney CBD, 2020–2024)** The bar chart compares average train tap-ons in the Sydney CBD during normal days, public holidays, and the year-end shutdown from 2020 to 2024.
+Normal days exclude Vivid, concerts, public holidays, and shutdown periods.
+
+```{r holidays}
+# filter and prep train data
+opal_trains <- opal_selected %>%
+  mutate(
+    date = as.Date(trip_origin_date),
+    year = as.character(format(date, "%Y")),
+    Tap_Ons_Est = tap_ons(Tap_Ons)
+  ) %>%
+  filter(ti_region == "Sydney CBD", mode_name == "Train", year %in% as.character(2020:2024))
+
+# shutdown date ranges
+shutdown_ranges <- list(
+  "2020" = seq(as.Date("2020-12-25"), as.Date("2021-01-04"), by = "day"),
+  "2021" = seq(as.Date("2021-12-25"), as.Date("2022-01-04"), by = "day"),
+  "2022" = seq(as.Date("2022-12-25"), as.Date("2023-01-04"), by = "day"),
+  "2023" = seq(as.Date("2023-12-25"), as.Date("2024-01-04"), by = "day"),
+  "2024" = seq(as.Date("2024-12-25"), as.Date("2025-01-04"), by = "day")
+)
+
+shutdown_lookup <- bind_rows(
+  lapply(names(shutdown_ranges), function(yr) {
+    tibble(date = shutdown_ranges[[yr]], shutdown_year = yr)
+  })
+)
+
+# join shutdown info
+opal_trains_shutdown <- opal_trains %>%
+  left_join(shutdown_lookup, by = "date")
+
+special_shutdown <- opal_trains_shutdown %>%
+  filter(!is.na(shutdown_year)) %>%
+  group_by(year = shutdown_year) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE), .groups = "drop") %>%
+  mutate(period = "Shutdown (Dec 25–Jan 4)")
+
+normal_days <- opal_trains %>%
+  filter(!date %in% exclude_dates) %>%
+  group_by(year) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE), .groups = "drop") %>%
+  mutate(period = "Normal")
+
+special_holidays <- opal_trains %>%
+  filter(date %in% public_holidays) %>%
+  group_by(year) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE), .groups = "drop") %>%
+  mutate(period = "Public Holidays")
+
+compare_data_trains_shutdown <- bind_rows(normal_days, special_holidays, special_shutdown) %>%
+  mutate(period = factor(period, c("Normal", "Public Holidays", "Shutdown (Dec 25–Jan 4)")))
+
+# ensure complete grid
+all_years <- as.character(2020:2024)
+all_periods <- c("Normal", "Public Holidays", "Shutdown (Dec 25–Jan 4)")
+complete_grid <- expand.grid(year = all_years, period = all_periods, stringsAsFactors = FALSE)
+
+compare_data_trains_shutdown_complete <- complete_grid %>%
+  left_join(compare_data_trains_shutdown, by = c("year", "period")) %>%
+  mutate(
+    period = factor(period, all_periods),
+    year = factor(year, all_years)
+  )
+
+# colours
+shutdown_colors <- c(
+  "Normal" = "#A9A9A9",
+  "Public Holidays" = "#EF553B",
+  "Shutdown (Dec 25–Jan 4)" = "#999999"
+)
+
+# plot
+g_shutdown <- ggplot(compare_data_trains_shutdown_complete, aes(
+    x = year, 
+    y = avg_tap_ons, 
+    fill = period,
+    tooltip = paste0("Year: ", year, "<br>Period: ", period, "<br>Avg Tap-Ons: ", ifelse(is.na(avg_tap_ons), "No data", comma(round(avg_tap_ons))))
+  )) +
+  geom_col_interactive(position = position_dodge(width = 0.7), width = 0.6, na.rm = TRUE) +
+  geom_text(
+    aes(label = ifelse(is.na(avg_tap_ons), "", comma(round(avg_tap_ons)))),
+    position = position_dodge(width = 0.7),
+    vjust = -0.3, size = 3, color = "black", show.legend = FALSE, na.rm = TRUE
+  ) +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "Average Train Tap-Ons (Sydney CBD, 2020–2024)",
+    subtitle = "Normal days exclude Vivid, concerts, public holidays, and shutdown period",
+    x = "Year", 
+    y = "Average Tap-Ons (per day)"
+  ) +
+  scale_fill_manual(values = shutdown_colors) +
+  theme(
+    legend.position = "top",
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 15),
+    plot.subtitle = element_text(size = 11)
+  )
+
+girafe(ggobj = g_shutdown)
+```
+
+**Key Findings**:
+
+- **Normal Days**: Tap-ons remain steady, ranging from 2,907 (2021) to 10,549 (2024), with a peak of 5,970 in 2020 and a high of 9,157 in 2024, reflecting typical weekday usage.
+- **Public Holidays**: Tap-ons are lower, with 2,807 (2020) to 6,089 (2023) peaking at 6,561 in 2024 indicating reduced demand due to holiday closures and altered schedules.
+- **Year-End Shutdown (Dec 25–Jan 4)**: Tap-ons are consistently lower, ranging from 2,443 (2020) to 7,226 (2023), with 7,110 in 2024, reflecting minimal travel during this period.
+
+**Analysis**: The data shows a clear decline in tap-ons during public holidays and the year-end shutdown compared to normal days, with shutdown periods generally having the lowest usage (e.g., 2,443 in 2020 vs. 5,970 normal).
+By 2024, normal days reached 10,549, while shutdown dropped to 7,110, suggesting a recovery in regular usage but continued reduced activity during holidays.
+This trend highlights the need for adjusted train services during these quieter periods.
+
+## Comparative Impact of Events: Radar Chart
+
+The radar chart visualizes the yearly average train tap-ons in the Sydney CBD across different periods (Normal, Vivid Sydney, Public Holidays, Shutdown) from 2020 to 2024, offering a comparative overview of event impacts.
+
+```{r conclusions, warning=FALSE}
+# prep vivid sample days
+set.seed(123)
+
+vivid_sample_dates <- tibble(
+  year = as.integer(2020:2023),
+  vivid_date = c(
+    sample(seq(as.Date("2020-05-22"), as.Date("2020-06-14"), by = "day"), 1),
+    sample(seq(as.Date("2021-05-21"), as.Date("2021-06-12"), by = "day"), 1),
+    sample(seq(as.Date("2022-05-27"), as.Date("2022-06-18"), by = "day"), 1),
+    sample(seq(as.Date("2023-05-26"), as.Date("2023-06-17"), by = "day"), 1)
+  )
+)
+
+vivid_sample_values <- vivid_sample_dates %>%
+  left_join(opal_selected %>%
+              filter(ti_region == "Sydney CBD", mode_name == "Train") %>%
+              mutate(Tap_Ons_Est = tap_ons(Tap_Ons)),
+            by = c("year", "vivid_date" = "date")) %>%
+  group_by(year) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons_Est, na.rm = TRUE)) %>%
+  mutate(period = "Vivid Sydney")
+
+# 2024 vivid avg
+vivid_2024 <- vivid_days_df %>%
+  filter(year == 2024) %>%
+  select(year, avg_tap_ons) %>%
+  mutate(period = "Vivid Sydney")
+
+vivid_days_all <- bind_rows(
+  vivid_sample_values,
+  vivid_2024
+) %>%
+  arrange(year) %>%
+  mutate(year = as.character(year))
+
+normal_days <- normal_days %>% mutate(year = as.character(year))
+special_holidays <- special_holidays %>% mutate(year = as.character(year))
+special_shutdown <- special_shutdown %>% mutate(year = as.character(year))
+
+all_periods <- bind_rows(
+  normal_days %>% mutate(period = "Normal"),
+  vivid_days_all,
+  special_holidays %>% mutate(period = "Public Holidays"),
+  special_shutdown %>% mutate(period = "Shutdown")
+)
+
+# 1 row per year, cols for each period
+radar_data <- all_periods %>%
+  select(year, period, avg_tap_ons) %>%
+  tidyr::pivot_wider(names_from = period, values_from = avg_tap_ons)
+
+radar_data <- radar_data %>%
+  arrange(year) %>%
+  select(year, "Normal", "Vivid Sydney", "Public Holidays", "Shutdown")
+
+# remove year col for fmsb
+radar_data_fmsb <- radar_data %>% select(-year)
+radar_data_fmsb[] <- lapply(radar_data_fmsb, function(x) as.numeric(as.character(x)))
+radar_data_fmsb[is.na(radar_data_fmsb)] <- 0
+
+# max/min rows for scaling
+radar_data_fmsb <- rbind(
+  apply(radar_data_fmsb, 2, max, na.rm=TRUE),
+  apply(radar_data_fmsb, 2, min, na.rm=TRUE),
+  radar_data_fmsb
+)
+
+year_labels <- as.character(radar_data$year)
+rownames(radar_data_fmsb) <- c("Max", "Min", year_labels)
+
+colors_border <- brewer.pal(max(3, length(year_labels)), "Set1")[1:length(year_labels)]
+
+# plot
+radarchart(radar_data_fmsb,
+           axistype=1,
+           pcol=colors_border,
+           plwd=2,
+           plty=1,
+           cglcol="grey", cglty=1, axislabcol="grey", caxislabels=round(seq(0, max(radar_data_fmsb, na.rm=TRUE), length.out=5)), cglwd=0.8,
+           vlcex=1.1,
+           title="Yearly Average Train Tap-Ons by Period (Sydney CBD)"
+)
+legend("topright", legend=year_labels, bty="n", pch=20, col=colors_border, text.col="black", cex=1.1, pt.cex=2)
+```
+
+**Analysis Normal Days**: Tap-ons show a steady increase, from 5,970 in 2020 to 10,609 in 2024, reflecting a recovery and growth in regular usage, peaking in 2024.
+Vivid Sydney: Tap-ons fluctuate, starting at 3,050 in 2020 (impacted by restrictions), rising to 16,369 in 2023, and slightly dropping to 17,068 in 2024.
+This highlights a strong evening-driven surge, with 2024 showing the highest impact.
+Public Holidays: Tap-ons remain lower, ranging from 2,807 in 2020 to 6,561 in 2024, indicating reduced demand, with a gradual upward trend as restrictions eased.
+Shutdown (Dec 25–Jan 4): Tap-ons are consistently the lowest, from 2,443 in 2020 to 7,110 in 2024, showing minimal usage during this period, with a notable increase in 2024.
+
+**Insights**: The chart reveals Vivid Sydney as the period with the highest tap-on spikes, especially in 2023–2024, driven by its nighttime appeal.
+Normal days show the most consistent growth, while Public Holidays and Shutdown periods exhibit lower usage, with Shutdown consistently the least active.
+The 2024 data suggests a robust recovery in all categories, with Vivid Sydney and Normal days leading, underscoring the need for tailored train services to manage peak event periods effectively.
+
+------------------------------------------------------------------------
+
+# Weather Events and Ridership Fluctuations
+
+::: section-subtitle
+Heatwaves, Floods and Train Usage
+:::
+
+Sydney's public transport system often faces disruptions due to weather extremes.
+In this section, we explore how train usage patterns (measured via Opal Tap-Ons) changed during heatwaves and flood-risk days between 2020 and 2025.
+
+## Heatwaves and Floods {.tabset}
+
+To capture weather variations across the city, we used Bureau of Meteorology (BOM) data from four key regions: Sydney Airport, Parramatta, Richmond and Bankstown.
+These locations were chosen to ensure broad geographic coverage as they represent different parts of Sydney and help us understand the impact across the entire metropolitan area.
+
+### Heatwaves
+
+In Australia, a heatwave is commonly defined as three or more consecutive days where the daily maximum temperature exceeds 35°C.
+Using this we identified heatwave periods across the four key Sydney regions from 2020 to 2025.
+
+The chart below shows the maximum daily temperatures on heatwave days across Bankstown, Parramatta, Richmond and Sydney Airport from 2020 to 2025.
+The dashed trend lines highlight how temperature patterns varied over time in different areas.
+
+```{r, message=FALSE, warning=FALSE}
+# filter cols and remove NAs
+sydney_weather_filtered <- sydney_weather %>%
+  select(Date, MaxTemp, region) %>%
+  arrange(Date) %>%
+  filter(!is.na(MaxTemp)) %>%
+  mutate(HotDay = MaxTemp > 35)
+
+rle_hot <- rle(sydney_weather_filtered$HotDay)
+hot_streaks <- inverse.rle(rle_hot)
+sydney_weather_filtered$HeatwaveGroup <- cumsum(c(TRUE, diff(hot_streaks) != 0))
+
+# flag actual heatwave days (3+ hot days in a row)
+sydney_weather_filtered$IsHeatwaveDay <- with(
+  sydney_weather_filtered,
+  ave(HotDay, HeatwaveGroup, FUN = function(x) all(x) & length(x) >= 3)
+)
+
+# keep heatwave days only
+heatwave_days <- sydney_weather_filtered %>%
+  filter(IsHeatwaveDay) %>%
+  select(Date, MaxTemp, region, HeatwaveGroup) %>%
+  mutate(tooltip = paste0(
+    "Date: ", Date,
+    "\nMax Temp: ", MaxTemp, "°C",
+    "\nRegion: ", region
+  ))
+
+heatwave_plot <- ggplot(heatwave_days, aes(x = Date, y = MaxTemp, color = region)) +
+  geom_point_interactive(aes(tooltip = tooltip), size = 3, alpha = 0.8) +
+  geom_smooth(method = "loess", se = FALSE, size = 0.6, linetype = "dashed") +
+  scale_y_continuous(name = "Max Temperature (°C)", limits = c(34, NA)) +
+  scale_x_date(name = "Date") +
+  labs(title = "Heatwave Days in Sydney by Region (2020–2025)", color = "Region") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "bottom")
+
+girafe(ggobj = heatwave_plot)
+```
+
+**Key Findings**: 
+
+- Richmond had extreme heat in 2020 and 2024 but remained moderate or in lower half of other years.
+- Parramatta recorded one of the highest temperatures in 2020 and stayed within the top 3 during 2022 despite fewer regions experiencing heatwaves.
+- Bankstown was consistently among the top 3--4 hottest regions, with it's highest being 45.3 degrees in 2020 and it was the highest in 2022 (when only 3 regions had heatwaves).
+- Sydney Airport had one of the highest temperatures nearly every year though its values remained fairly stable across time, except in 2022 where it recorded no heatwave.
+- Despite some fluctuations, 2024 and 2025 saw a renewed increase in heatwave intensity across nearly all regions following a notable dip around 2022 highlighting a resurgence of extreme heat events in recent years.
+
+### Floods
+
+Flood-risk days were identified using a rainfall threshold of 80mm, based on regional standards for potential flooding.
+The graph shows the distribution of such days from 2020 to 2025 across four Sydney regions --- Bankstown, Parramatta, Richmond, and Sydney Airport.
+
+Each subplot below highlights the rainfall amounts on these high-rain days and their occurrence over time.
+
+```{r}
+# filter flood-risk days (Rainfall > 50mm)
+flood_risk_days <- sydney_weather %>%
+  filter(`Rainfall` > 80) %>%
+  select(Date, `Rainfall`, region)
+
+flood_risk_days <- flood_risk_days %>%
+  arrange(Date, region)
+
+# consecutive-day flood events with a FloodEvent ID
+flood_risk_days <- flood_risk_days %>%
+  group_by(region) %>%
+  mutate(
+    gap = c(0, as.numeric(diff(Date))),
+    FloodEvent = cumsum(gap > 1) + 1
+  ) %>%
+  select(-gap, -FloodEvent) %>%
+  ungroup()
+
+flood_risk_days <- flood_risk_days %>%
+  mutate(
+    tooltip = paste0(
+      "Date: ", Date,
+      "\nRainfall: ", Rainfall, " mm"
+    )
+  )
+
+# plot
+flood_plot <- ggplot(flood_risk_days, aes(x = Date, y = Rainfall, color = region)) +
+  geom_point_interactive(aes(tooltip = tooltip), size = 2, alpha = 0.8) +
+  facet_wrap(~ region, ncol = 2, scales = "free_y") +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Flood-Risk Days by Region in Sydney (2020–2025)",
+    x = "Date", y = "Rainfall (mm)",
+    color = "Region"
+  ) +
+  theme_minimal(base_size = 13)
+
+girafe(ggobj = flood_plot)
+```
+
+**Key Findings**: 
+
+- Richmond recorded the highest rainfall of all regions during this period: 181.4mm in May 2025.
+While that was an extreme, Richmond otherwise experienced moderate rainfall levels across the years.
+- 10th February 2020 was a standout flood event across Sydney with Bankstown (159.6mm), Parramatta (158mm) and Sydney Airport (161mm) all recording heavy rainfall on the same day.
+Interestingly, Richmond only had 86.8mm on that date showing how rainfall intensity can vary across nearby locations.
+- Sydney Airport, despite its rainfall being more spread out, still saw consistently higher flood-risk days than most other regions.
+- Parramatta generally had lower and more stable rainfall not going above 110mm.
+mark except on 10th Feburary 2020.
+- Bankstown saw several flood-risk events with notable peaks in 2020 and 2022.
+
+## Train Usage During Extreme Weathers
+
+This section shows how train ridership based on the Opal Tap-On data responded to extreme weather conditions like heatwaves and flood-risk days from 2020 to 2025.
+By comparing travel behaviour across these conditions we aim to understand how disruptions influence public transport usage and commuter adaptability.
+
+### Heatwaves {.tabset}
+
+#### Overall
+
+The boxplot below compares total daily train Tap-Ons between heatwave and non-heatwave days across Sydney from 2020 to 2025.
+Each dot represents one day's usage while the boxes highlight the distribution and spread of daily Tap-Ons.
+
+```{r}
+# analyze and tag daily train usage on heatwave vs non-heatwave days
+all_train_data <- all_train_data %>%
+  mutate(trip_origin_date = as.Date(trip_origin_date))
+
+train_with_weather <- all_train_data %>%
+  mutate(IsHeatwave = trip_origin_date %in% heatwave_days$Date)
+
+heatwave_comparison <- train_with_weather %>%
+  group_by(IsHeatwave) %>%
+  summarise(
+    avg_tap_ons = mean(Tap_Ons, na.rm = TRUE),
+    median_tap_ons = median(Tap_Ons, na.rm = TRUE),
+    count = n()
+  )
+
+print(heatwave_comparison)
+
+# plot
+daily_tap_ons <- train_with_weather %>%
+  group_by(trip_origin_date, IsHeatwave) %>%
+  summarise(daily_total = sum(Tap_Ons, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    tooltip = paste0(
+      "Date: ", trip_origin_date,
+      "\nTotal Tap-Ons: ", daily_total
+    )
+  )
+
+p <- ggplot(daily_tap_ons, aes(x = IsHeatwave, y = daily_total, fill = IsHeatwave)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  geom_point_interactive(aes(tooltip = tooltip), position = position_jitter(width = 0.2), alpha = 0.3, color = "black") +
+  labs(
+    title = "Daily Train Usage on Heatwave vs Non-Heatwave Days",
+    x = "Heatwave Day",
+    y = "Total Train Tap-Ons (per day)"
+  ) +
+  scale_fill_manual(values = c("FALSE" = "#4B9CD3", "TRUE" = "#D55E00")) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+
+girafe(ggobj = p)
+```
+
+**Key Findings**: 
+
+- Surprisingly, train usage was higher on heatwave days with an average of 6,605 Tap-Ons per station per day compared to 6,130 on regular days.
+- The median Tap-Ons were also higher on heatwave days (700 vs 600) suggesting more consistent commuter demand during extreme heat.
+- This might suggest people relied more on air-conditioned trains for comfort or chose to travel to cooler destinations like beaches, malls or indoor venues to escape the heat.
+- It also indicates that heatwaves didn't significantly disrupt the train network or maybe people simply adjusted their travel patterns around them.
+
+#### Station-wise
+
+The bar plot below visualises average train tap-ons across Sydney regions during heatwave and non-heatwave days from 2020 to 2025. It highlights how people's travelling patterns shift under extreme temperature conditions with each bar representing the mean number of daily tap-ons per region, split by whether the day was classified as a heatwave.
+
+```{r}
+heatwave_region_summary <- train_with_weather %>%
+  filter(!is.na(ti_region)) %>%
+  group_by(IsHeatwave, ti_region) %>%
+  summarise(avg_tap_ons = mean(Tap_Ons, na.rm = TRUE), .groups = 'drop') %>%
+  mutate(
+    tooltip = paste0("Region: ", ti_region,
+                     "\nHeatwave: ", IsHeatwave,
+                     "\nAvg Tap-Ons: ", round(avg_tap_ons)),
+    data_id = paste(ti_region, IsHeatwave)
+  )
+
+# plot
+heatwave_region_plot <- ggplot(heatwave_region_summary, 
+                               aes(x = reorder(ti_region, -avg_tap_ons), 
+                                   y = avg_tap_ons, 
+                                   fill = IsHeatwave,
+                                   tooltip = tooltip,
+                                   data_id = data_id)) +
+  geom_col_interactive(position = "dodge", width = 0.7) +
+  labs(
+    title = "Average Train Tap-Ons by Region on Heatwave vs Normal Days",
+    x = "Region",
+    y = "Avg Tap-Ons",
+    fill = "Heatwave Day?"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+girafe(ggobj = heatwave_region_plot)
+
+# stats
+# Reshape to wide format
+heatwave_table <- reshape(
+  heatwave_region_summary[, c("ti_region", "IsHeatwave", "avg_tap_ons")],
+  timevar = "IsHeatwave",
+  idvar = "ti_region",
+  direction = "wide"
+)
+```
+
+**Key Findings**:
+
+- Overall tap-ons increased on heatwave days, the average tap-ons actually went up across most regions especially in the "All – NSW" region where usage rose from ~29,500 to over 32,000.
+- Sydney CBD and Other showed notable rises suggesting that heatwaves may not discourage public transport, possibly due to air-conditioned trains.
+- On the other hand, outer regions like Wollongong and Newcastle stayed low with very minimal change, which makes sense since they already have fewer commuters.
+
+### Floods {.tabset}
+
+#### Overall
+
+The bar plot below displays average daily train Tap-Ons on flood-risk days compared to normal days, along with standard error bars to show variability.
+
+```{r}
+# add IsFlood col
+train_with_weather <- train_with_weather %>%
+  mutate(IsFlood = trip_origin_date %in% flood_risk_days$Date)
+
+# summarise
+flood_comparison <- train_with_weather %>%
+  group_by(IsFlood) %>%
+  summarise(
+    avg_tap_ons = mean(Tap_Ons, na.rm = TRUE),
+    median_tap_ons = median(Tap_Ons, na.rm = TRUE),
+    count = n()
+  )
+
+print(flood_comparison)
+
+# plot
+flood_comparison <- train_with_weather %>%
+  mutate(IsFlood = trip_origin_date %in% flood_risk_days$Date) %>%
+  group_by(IsFlood) %>%
+  summarise(
+    avg_tap_ons = mean(Tap_Ons, na.rm = TRUE),
+    sd = sd(Tap_Ons, na.rm = TRUE),
+    n = n(),
+    se = sd / sqrt(n),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    tooltip = paste0(
+      "\nAvg Tap-Ons: ", round(avg_tap_ons),
+      "\nSE: ", round(se, 1),
+      "\nCount: ", n
+    )
+  )
+
+flood_bar_plot <- ggplot(flood_comparison, aes(x = IsFlood, y = avg_tap_ons, fill = IsFlood)) +
+  geom_col_interactive(aes(tooltip = tooltip), width = 0.6) +
+  geom_errorbar(aes(ymin = avg_tap_ons - se, ymax = avg_tap_ons + se), width = 0.2) +
+  labs(
+    title = "Average Train Usage on Flood vs Non-Flood Days",
+    x = "Is Flood Day?",
+    y = "Average Train Tap-Ons"
+  ) +
+  scale_fill_manual(values = c("FALSE" = "#90CAF9", "TRUE" = "#F48FB1")) +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "none")
+
+girafe(ggobj = flood_bar_plot)
+```
+
+**Key Findings**: 
+
+- Train usage clearly drops during flood-risk days with an average of 4,674 Tap-Ons per station per day as compared to 6,153 on non-flood days.
+- The median Tap-Ons also dropped from 600 to 500 suggesting that the dip wasn't due to outliers, the floods consistently led to lower usage.
+- This suggests that floods significantly disrupt public transport routines possibly due to delays, cancellations or people avoid travel altogether.
+- In contrast to heatwaves where we saw a rise in train usage, floods likely made train access physically harder or riskier leading to reduced ridership.
+
+#### Station-wise
+
+Below plot compares average train tap-ons across different Sydney regions on flood days vs non-flood days between 2020–2025. Each bar shows how flood events affected regional train usage to know whether flooding leads to lower commuter activity and whether certain areas are more sensitive to disruption.
+
+```{r}
+flood_region_summary <- train_with_weather %>%
+  group_by(IsFlood, ti_region) %>%
+  summarise(
+    avg_tap_ons = mean(Tap_Ons, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    tooltip = paste0("Region: ", ti_region,
+                     "\nFlood: ", IsFlood,
+                     "\nAvg Tap-Ons: ", round(avg_tap_ons)),
+    data_id = paste(ti_region, IsFlood)
+  )
+
+# plot
+flood_region_plot <- ggplot(flood_region_summary, 
+                            aes(x = reorder(ti_region, -avg_tap_ons), 
+                                y = avg_tap_ons, 
+                                fill = IsFlood,
+                                tooltip = tooltip,
+                                data_id = data_id)) +
+  geom_col_interactive(position = "dodge", width = 0.7) +
+  labs(
+    title = "Average Train Tap-Ons by Region on Flood vs Non-Flood Days",
+    x = "Region",
+    y = "Average Tap-Ons",
+    fill = "Flood Day?"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+girafe(ggobj = flood_region_plot)
+```
+**Key Findings**:
+
+- Tap-ons drop on flood days across nearly all regions, showing that people seem to avoid train travel when conditions worsen.
+- The region "All - NSW" unsurprisingly shows the highest average tap-ons where the usage drops from ~29,500 to ~22,000 on flood days.
+- Areas like Other and Sydney CBD follow similar trends showing clear disruption during floods.
+- Suburban regions like Parramatta, Macquarie Park and Chatswood show moderate drops.
+- Wollongong and Newcastle already have low average tap-ons and flood effect appears negligible there.
+
+------------------------------------------------------------------------
+
+# Conclusion
+
+This project explored how Sydney train usage changed from 2020 to 2025 in response to major disruptions like COVID-19, public events, and extreme weather. COVID caused sharp declines in ridership, with uneven recovery across stations. Events like Vivid and major concerts led to short-term spikes, especially in the CBD. Surprisingly, heatwaves showed higher train usage, possibly due to commuters seeking cooler transport, while floods consistently reduced ridership. These patterns highlight the importance of flexible, data-driven planning for public transport systems.
+
+------------------------------------------------------------------------
+
+# Limitations
+
+- Some data (e.g., July 2021) was missing or unreadable.
+- Tap-on bins were estimated (e.g., “>6400” as 8000), which may affect accuracy.
+- Event and weather impacts were assessed broadly by region, not by specific train lines.
+- Weather varies widely across Sydney, but we only used data from 4 key regions — this gives good coverage but isn’t fully representative.
+- Commuter behaviour was inferred from patterns, without access to survey or trip purpose data.
+- No access to actual service disruption logs during weather events.
+
+------------------------------------------------------------------------
+
+# References
+
+**Additional Data Sources**:
+
+[Bureau of Meteorology (BOM)](http://www.bom.gov.au/climate/data/index.shtml?bookmark=200) <br>
+[Entry/Exits till 2024](https://opendata.transport.nsw.gov.au/data/dataset/train-station-entries-and-exits-data)
+
+**Others**:
+
+[Heatwaves](https://www.climatechange.environment.nsw.gov.au/impacts-climate-change/weather-and-oceans/heatwaves) <br>
+[Concerts](https://www.austadiums.com/stadiums/stadium-australia/concerts) <br>
+[Public Holidays](https://www.nsw.gov.au/about-nsw/public-holidays)
