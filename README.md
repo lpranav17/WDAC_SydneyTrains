@@ -9,7 +9,7 @@
 
 This folder contains the HTML Report, as well as a video presentation, for the Winter Data Analysis Challenge.
 
-HTML Report - [WDAC_Project HTML Report](https://pages.github.sydney.edu.au/plok0657/WDAC_Project/WDAC.html)
+HTML Report - [WDAC_Project HTML Report](https://lpranav17.github.io/WDAC_SydneyTrains/WDAC.html)
 
 If you are unable to access the video directly, you can view it using the following Google Drive link:
 [Google Drive Video Link](To be Updated)
